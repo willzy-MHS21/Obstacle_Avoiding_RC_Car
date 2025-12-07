@@ -131,6 +131,9 @@ void handleCommand(char cmd)
 			lcd.print("Obstacle: ");
 			lcd.print(distance);
 			lcd.print("cm");
+			
+			// Send feedback to Python for vibration
+			Serial.println("BLOCKED");
 		}
 		else
 		{
@@ -141,6 +144,9 @@ void handleCommand(char cmd)
 			lcd.setCursor(0, 1);
 			lcd.print("Forward");
 			moveForward();
+			
+			// Send feedback to Python
+			Serial.println("Forward");
 		}
 		break;
 
@@ -157,6 +163,7 @@ void handleCommand(char cmd)
 		lcd.setCursor(0, 1);
 		lcd.print("Backward");
 		moveBackward();
+		Serial.println("Backward");
 		break;
 
 	case 'A': // Left
@@ -172,6 +179,7 @@ void handleCommand(char cmd)
 		lcd.setCursor(0, 1);
 		lcd.print("Left");
 		manualTurnLeft();
+		Serial.println("Turn Left");
 		break;
 
 	case 'D': // Right
@@ -187,6 +195,7 @@ void handleCommand(char cmd)
 		lcd.setCursor(0, 1);
 		lcd.print("Right");
 		manualTurnRight();
+		Serial.println("Turn Right");
 		break;
 
 	case 'X': // Stop
@@ -202,6 +211,7 @@ void handleCommand(char cmd)
 		lcd.setCursor(0, 1);
 		lcd.print("Stopped");
 		stopMovement();
+		Serial.println("Stopped");
 		break;
 
 	case 'M': // Toggle to Auto Mode
@@ -216,6 +226,7 @@ void handleCommand(char cmd)
 		lcd.print("Mode: AUTO");
 		myservo.write(100); // Reset servo
 		distance = checkDistance();
+		Serial.println("Auto Mode");
 		break;
 
 	case 'H': // Horn/Buzzer
@@ -225,6 +236,7 @@ void handleCommand(char cmd)
 		delay(300);
 		digitalWrite(BUZZER_PIN, LOW);
 		digitalWrite(BUZZER2_PIN, LOW);
+		Serial.println("Horn");
 		break;
 
 	default:
@@ -241,11 +253,17 @@ void autonomousDrive()
 {
 	int distanceRight = 0;
 	int distanceLeft = 0;
+	
+	// Check distance FIRST before any movement
+	distance = checkDistance();
 	delay(10);
 
 	// Check if obstacle is too close (15cm threshold)
 	if (distance <= 15)
 	{
+		// Stop IMMEDIATELY when obstacle detected
+		stopMovement();
+		
 		// Alert with both buzzers
 		digitalWrite(BUZZER_PIN, HIGH);
 		digitalWrite(BUZZER2_PIN, HIGH);
@@ -258,6 +276,9 @@ void autonomousDrive()
 		lcd.print("Dist: ");
 		lcd.print(distance);
 		lcd.print(" cm");
+		
+		// Send feedback to Python for vibration
+		Serial.println("AUTO: Obstacle Detected");
 
 		// Turn off buzzer
 		delay(300);
@@ -265,7 +286,6 @@ void autonomousDrive()
 		digitalWrite(BUZZER2_PIN, LOW);
 
 		// Stop
-		stopMovement();
 		delay(100);
 
 		// LCD display for moving backward
@@ -355,9 +375,6 @@ void autonomousDrive()
 
 		moveForward();
 	}
-
-	// Update distance reading for next iteration
-	distance = checkDistance();
 }
 
 /*
@@ -483,6 +500,9 @@ void manualTurnRight()
 // Auto mode turning - timed turn (1 sec)
 void turnLeft()
 {
+	Serial.println("AUTO: Turn Left Start");
+	Serial.flush();  // Ensure message is sent immediately
+	
 	motor1.setSpeed(255);
 	motor2.setSpeed(255);
 	motor3.setSpeed(255);
@@ -500,10 +520,16 @@ void turnLeft()
 	motor2.setSpeed(200);
 	motor3.setSpeed(200);
 	motor4.setSpeed(200);
+	
+	Serial.println("AUTO: Turn Left End");
+	Serial.flush();  // Ensure message is sent immediately
 }
 
 void turnRight()
 {
+	Serial.println("AUTO: Turn Right Start");
+	Serial.flush();  // Ensure message is sent immediately
+	
 	motor1.setSpeed(255);
 	motor2.setSpeed(255);
 	motor3.setSpeed(255);
@@ -521,6 +547,9 @@ void turnRight()
 	motor2.setSpeed(200);
 	motor3.setSpeed(200);
 	motor4.setSpeed(200);
+	
+	Serial.println("AUTO: Turn Right End");
+	Serial.flush();  // Ensure message is sent immediately
 }
 
 /*
@@ -549,6 +578,9 @@ void checkManualModeSafety()
 				lcd.print("Obstacle: ");
 				lcd.print(distance);
 				lcd.print("cm");
+				
+				// Send feedback to Python for vibration
+				Serial.println("BLOCKED");
 			}
 
 			// Continuous beeping pattern (beep every 500ms)
@@ -584,6 +616,10 @@ void checkManualModeSafety()
 				lcd.print("Mode: MANUAL");
 				lcd.setCursor(0, 1);
 				lcd.print("Path Clear!");
+				
+				// Send feedback to Python
+				Serial.println("Path Clear");
+				
 				delay(500);
 
 				// Resume forward movement

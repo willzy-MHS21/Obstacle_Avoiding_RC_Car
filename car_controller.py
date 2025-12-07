@@ -3,9 +3,10 @@ import keyboard
 import pygame
 import time
 import sys
+import threading
 
 # Arduino's COM port 
-ARDUINO_PORT = 'COM3'  
+ARDUINO_PORT = 'COM4'  
 BAUD_RATE = 9600
 
 # Controller settings
@@ -18,6 +19,12 @@ controller_connected = False
 last_command = None
 button_pressed = {}
 arduino = None
+vibration_active = False
+vibration_thread = None
+current_vibration_type = None  # Track what type of vibration is active
+obstacle_vibration_triggered = False  # Track if we already vibrated for this obstacle
+in_auto_mode = False  # Track if we're in auto mode
+auto_turn_vibrating = False  # Track if auto mode is currently turning
 
 """Check if a controller is connected and initialize it"""
 def check_for_controller():
@@ -54,6 +61,79 @@ def check_for_controller():
             controller = None
             controller_connected = False
         return False
+
+"""Continuous vibration for turning"""
+def continuous_turn_vibration():
+    global vibration_active, controller, controller_connected, current_vibration_type
+    
+    while vibration_active and current_vibration_type == "turn":
+        if controller_connected and controller:
+            try:
+                if hasattr(controller, 'rumble'):
+                    controller.rumble(0.5, 0.5, 100)
+                    time.sleep(0.08)
+                else:
+                    break
+            except:
+                break
+        else:
+            break
+
+"""Single vibration for obstacle detection"""
+def vibrate_for_obstacle():
+    global controller, controller_connected
+    
+    if controller_connected and controller:
+        try:
+            if hasattr(controller, 'rumble'):
+                controller.rumble(0.8, 0.8, 1000)
+        except:
+            pass
+
+"""Start continuous vibration in a separate thread"""
+def start_continuous_vibration(vibration_type):
+    global vibration_active, vibration_thread, current_vibration_type
+    
+    # Stop any existing vibration first
+    if vibration_active:
+        stop_continuous_vibration()
+        time.sleep(0.05)
+    
+    vibration_active = True
+    current_vibration_type = vibration_type
+    
+    if vibration_type == "turn":
+        vibration_thread = threading.Thread(target=continuous_turn_vibration, daemon=True)
+        vibration_thread.start()
+
+"""Stop continuous vibration"""
+def stop_continuous_vibration():
+    global vibration_active, controller, controller_connected, current_vibration_type
+    
+    vibration_active = False
+    current_vibration_type = None
+    
+    # Stop any ongoing rumble
+    if controller_connected and controller:
+        try:
+            controller.stop_rumble()
+        except:
+            pass
+    
+    time.sleep(0.05)  
+
+"""Single vibration for auto mode obstacle detection"""
+def vibrate_once(duration=0.5, intensity=0.8):
+    global controller, controller_connected
+    
+    if not controller_connected or controller is None:
+        return
+    
+    try:
+        if hasattr(controller, 'rumble'):
+            controller.rumble(intensity, intensity, int(duration * 1000))
+    except:
+        pass
 
 """Establish serial connection with Arduino"""
 def connect_arduino():
@@ -99,6 +179,11 @@ def display_controls():
         print("    B - Exit Program")
         print("    X - Horn/Buzzer")
         print("    Y - Auto Mode")
+        print("")
+        print("  VIBRATION FEATURES:")
+        print("    • Vibrates continuously while turning (both modes)")
+        print("    • Vibrates once (1 sec) when blocked in manual")
+        print("    • Vibrates once when obstacle detected (auto)")
 
     print("=" * 50)
     print("\nCar Ready! Use keyboard or controller...\n")
@@ -122,11 +207,6 @@ def send_command(cmd, source=""):
         
         if cmd in actions:
             print(f"{actions[cmd]} {source}")
-        
-        # Check Arduino response
-        if arduino.in_waiting > 0:
-            response = arduino.readline().decode('utf-8').strip()
-            print(f"[Arduino says]: {response}")
         
         last_command = cmd
 
@@ -221,6 +301,7 @@ def handle_pygame_events():
             # Controller was unplugged
             if controller_connected:
                 print("\nXbox Controller Disconnected")
+                stop_continuous_vibration()
                 controller = None
                 controller_connected = False
         
@@ -241,6 +322,65 @@ def handle_pygame_events():
                 source = '(Controller)'
     
     return command, source
+
+"""Monitor Arduino feedback for obstacle detection"""
+def monitor_arduino_feedback():
+    global arduino, obstacle_vibration_triggered, in_auto_mode, auto_turn_vibrating
+    
+    if arduino.in_waiting > 0:
+        try:
+            response = arduino.readline().decode('utf-8').strip()
+            
+            # Check for mode changes
+            if "Auto Mode" in response:
+                in_auto_mode = True
+                auto_turn_vibrating = False
+                return "auto_mode"
+            elif "Mode: MANUAL" in response:
+                in_auto_mode = False
+                auto_turn_vibrating = False
+                return "manual_mode"
+            
+            # Check for auto mode turns - START vibration
+            if "Turn Left Start" in response or "Turn Right Start" in response:
+                auto_turn_vibrating = True
+                if current_vibration_type != "turn":
+                    start_continuous_vibration("turn")
+                return "auto_turn_start"
+            
+            # Check for auto mode turns - END vibration
+            elif "Turn Left End" in response or "Turn Right End" in response:
+                auto_turn_vibrating = False
+                if current_vibration_type == "turn":
+                    stop_continuous_vibration()
+                return "auto_turn_end"
+            
+            # Check for obstacle in manual mode - FIRST DETECTION ONLY
+            elif "BLOCKED" in response:
+                if not obstacle_vibration_triggered:
+                    vibrate_for_obstacle()
+                    obstacle_vibration_triggered = True
+                return "blocked"
+            
+            # Check for path clear - reset the trigger IMMEDIATELY
+            elif "Forward" in response or "Backward" in response or "Left" in response or "Right" in response or "Stopped" in response:
+                obstacle_vibration_triggered = False
+                return "clear"
+            
+            # Check for path clear message
+            elif "Path Clear" in response:
+                obstacle_vibration_triggered = False
+                return "clear"
+            
+            # Check for auto mode obstacle detection
+            elif "Obstacle Detected" in response:
+                vibrate_once(0.5, 0.8)
+                return "auto_obstacle"
+                
+        except:
+            pass
+    
+    return None
 
 """Main program loop"""
 def main():
@@ -280,6 +420,9 @@ def main():
             command = None
             source = ''
             
+            # Monitor Arduino for obstacle feedback
+            monitor_arduino_feedback()
+            
             # Handle pygame events (controller connect/disconnect/buttons)
             event_command, event_source = handle_pygame_events()
             if event_command:
@@ -300,16 +443,32 @@ def main():
             # Handle exit command
             if command == 'ESC':
                 print(f"\nStopping car and exiting... {source}")
+                stop_continuous_vibration()
                 arduino.write(b'X')  # Stop the car
                 time.sleep(0.5)
                 break
             
             # Send command if we have one
             if command:
+                # Handle turn vibrations
+                # Only start manual turn vibration if NOT in auto mode turn
+                if command in ['A', 'D'] and not auto_turn_vibrating:
+                    if current_vibration_type != "turn":
+                        start_continuous_vibration("turn")
+                # Only stop turn vibration if NOT in auto mode turn
+                elif command not in ['A', 'D'] and not auto_turn_vibrating:
+                    if current_vibration_type == "turn":
+                        stop_continuous_vibration()
+                
                 send_command(command, source)
-            elif last_command not in ['M', 'H', 'X']:
-                # Auto-stop when no input (except in special modes)
-                send_command('X', '')
+            else:
+                # No command - only stop turn vibration if NOT in auto mode turn
+                if current_vibration_type == "turn" and not auto_turn_vibrating:
+                    stop_continuous_vibration()
+                
+                if last_command not in ['M', 'H', 'X']:
+                    # Auto-stop when no input (except in special modes)
+                    send_command('X', '')
             
             # Maintain update rate
             clock.tick(20)  # 20 Hz
@@ -317,13 +476,16 @@ def main():
 
     except KeyboardInterrupt:
         print("\n\nProgram interrupted. Stopping car...")
+        stop_continuous_vibration()
         arduino.write(b'X')
         time.sleep(0.5)
 
     finally:
         # Clean up
+        stop_continuous_vibration()
         arduino.close()
         if controller_connected and controller:
+            controller.stop_rumble()
             controller.quit()
         pygame.quit()
         print("Disconnected from Arduino")
